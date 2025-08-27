@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>IAQ Realtime Dashboard</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 1rem;
+      background: #f4f4f4;
+      color: #222;
+    }
+    h1 { text-align: center; }
+    .container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      background: white;
+    }
+    th, td {
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      font-size: 0.9rem;
+    }
+    th {
+      background: #eee;
+    }
+    canvas {
+      border: 1px solid #aaa;
+      background: white;
+    }
+    .section {
+      margin-top: 2rem;
+    }
+  </style>
+</head>
+<body>
+
+<h1>IAQ Realtime Dashboard</h1>
+
+<div class="container">
+  <div>
+    <h2>Realtime Readings</h2>
+    <table id="realtimeTable">
+      <thead><tr><th>Field</th><th>Value</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div>
+    <h2>Air Quality Index (Composite)</h2>
+    <canvas id="aqiChart" width="300" height="200"></canvas>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Live Graphs</h2>
+  <canvas id="gasChart" height="200"></canvas>
+  <canvas id="ppmChart" height="200"></canvas>
+</div>
+
+<div class="section">
+  <h2>Raw Log (Recent)</h2>
+  <table id="rawlogTable">
+    <thead><tr>
+      <th>Timestamp</th><th>Gas</th><th>PPM</th><th>R0</th>
+      <th>Temp</th><th>Humidity</th><th>Pressure</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Forecast</h2>
+    <table id="forecastTable">
+      <thead>
+        <tr>
+          <th>Window</th>
+          <th>Gas Predicted</th>
+          <th>Gas Slope</th>
+          <th>Gas Intercept</th>
+          <th>Gas MSE</th>
+          <th>Gas R²</th>
+          <th>Gas Samples</th>
+          <th>PPM Predicted</th>
+          <th>PPM Slope</th>
+          <th>PPM Intercept</th>
+          <th>PPM MSE</th>
+          <th>PPM R²</th>
+          <th>PPM Samples</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+</div>
+
+
+<script>
+const firebaseUrl = "https://iaq-realtime-dashboard-default-rtdb.asia-southeast1.firebasedatabase.app/iaq/live.json";
+const rawlogUrl = "https://frkrk59xli.execute-api.ap-southeast-2.amazonaws.com/rawlog";
+const forecastUrl = "https://frkrk59xli.execute-api.ap-southeast-2.amazonaws.com/rawlog/forecast";
+
+// Realtime data buffers
+const liveGasData = [];
+const livePPMData = [];
+
+function drawChart(canvasId, data, label = "Value", color = "blue") {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext("2d");
+  canvas.width = 640;
+  canvas.height = 200;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (data.length === 0) return;
+
+  const padding = 50;
+  const w = canvas.width - padding * 2;
+  const h = canvas.height - padding * 2;
+
+  const values = data.map(d => d.value);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+
+  ctx.strokeStyle = "#ccc";
+  ctx.fillStyle = "#000";
+  ctx.font = "12px sans-serif";
+  ctx.beginPath();
+  for (let i = 0; i <= 5; i++) {
+    const y = padding + (h * i) / 5;
+    const val = (max - ((max - min) * i) / 5).toFixed(0);
+    ctx.moveTo(padding, y);
+    ctx.lineTo(canvas.width - padding, y);
+    ctx.fillText(val, 10, y + 4);
+  }
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  data.forEach((point, i) => {
+    const x = padding + (w * i) / (data.length - 1);
+    const y = padding + h * (1 - (point.value - min) / (max - min));
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  ctx.fillStyle = "#333";
+  ctx.textAlign = "center";
+  data.forEach((point, i) => {
+    if (i % Math.floor(data.length / 5) === 0 || i === data.length - 1) {
+      const x = padding + (w * i) / (data.length - 1);
+      ctx.fillText(point.time, x, canvas.height - 5);
+    }
+  });
+}
+
+function drawBarChart(id, ppm, gas) {
+  const canvas = document.getElementById(id);
+  const ctx = canvas.getContext("2d");
+
+  // Hitung IAQ Index dari ppm & gas (contoh: sama seperti sebelumnya tapi bisa diganti rumus lain)
+  const ppmScore = ppm; // langsung nilai ppm
+  const gasScore = gas; // langsung nilai gas
+  const aqi = (0.6 * (ppm / 2000) + 0.4 * (500 / (gas || 1))) * 100; // rumus default
+
+  // Tentukan kategori PPM
+  let ppmCategory = "";
+  if (ppm <= 600) ppmCategory = "Baik";
+  else if (ppm <= 1000) ppmCategory = "Sedang";
+  else if (ppm <= 1500) ppmCategory = "Tidak Sehat";
+  else if (ppm <= 2000) ppmCategory = "Sangat Tidak Sehat";
+  else ppmCategory = "Berbahaya";
+
+  // Tentukan kategori IAQ Index & warna
+  let iaqCategory = "", color = "";
+  if (aqi <= 50) { iaqCategory = "Sangat Baik"; color = "green"; }
+  else if (aqi <= 100) { iaqCategory = "Baik"; color = "yellowgreen"; }
+  else if (aqi <= 150) { iaqCategory = "Sedikit Berpolusi"; color = "orange"; }
+  else if (aqi <= 200) { iaqCategory = "Cukup Berpolusi"; color = "red"; }
+  else if (aqi <= 250) { iaqCategory = "Sangat Berpolusi"; color = "maroon"; }
+  else if (aqi <= 350) { iaqCategory = "Berbahaya"; color = "purple"; }
+  else { iaqCategory = "Sangat Berbahaya"; color = "black"; }
+
+  // Gambar background batang
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#eee";
+  ctx.fillRect(60, 20, 50, 150);
+
+  // Gambar batang AQI
+  const height = Math.min(150, (aqi / 400) * 150); // normalisasi max = 400
+  ctx.fillStyle = color;
+  ctx.fillRect(60, 170 - height, 50, height);
+
+  // Teks AQI
+  ctx.fillStyle = "#000";
+  ctx.font = "14px sans-serif";
+  ctx.fillText(`AQI: ${aqi.toFixed(0)}`, 45, 15);
+  ctx.fillText(iaqCategory, 130, 50);
+
+  // Teks kategori PPM
+  ctx.font = "12px sans-serif";
+  ctx.fillText(`PPM: ${ppm} (${ppmCategory})`, 130, 70);
+}
+
+
+async function loadRealtime() {
+  try {
+    const res = await fetch(firebaseUrl);
+    const iaq = await res.json();
+    const tBody = document.querySelector("#realtimeTable tbody");
+    tBody.innerHTML = "";
+
+    if (!iaq) return;
+    const now = new Date().toLocaleTimeString();
+
+    for (const [key, val] of Object.entries(iaq)) {
+      tBody.innerHTML += `<tr><td>${key}</td><td>${val}</td></tr>`;
+    }
+
+    const ppm = iaq.correctedPPM || iaq.ppm || 0;
+    const gas = iaq.gas || 1;
+
+    drawBarChart("aqiChart", ppm, gas);
+
+    liveGasData.push({ time: now, value: gas });
+    livePPMData.push({ time: now, value: ppm });
+
+    if (liveGasData.length > 60) liveGasData.shift();
+    if (livePPMData.length > 60) livePPMData.shift();
+
+    drawChart("gasChart", liveGasData, "Gas", "orange");
+    drawChart("ppmChart", livePPMData, "PPM", "green");
+  } catch (err) {
+    console.error("Realtime fetch error:", err);
+  }
+}
+
+async function loadRawlogAndForecast() {
+  try {
+    const [rawlogRes, forecastRes] = await Promise.all([
+      fetch(rawlogUrl),
+      fetch(forecastUrl)
+    ]);
+    const rawlog = await rawlogRes.json();
+    const forecast = await forecastRes.json();
+
+    // RAW LOG
+    const rawBody = document.querySelector("#rawlogTable tbody");
+    rawBody.innerHTML = "";
+    const sortedRawlog = rawlog
+      .filter(r => r.timestamp)
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, 10);
+    sortedRawlog.forEach(row => {
+      const ts = new Date(row.timestamp).toLocaleString("en-GB");
+      rawBody.innerHTML += `<tr>
+        <td>${ts}</td>
+        <td>${row.gas}</td><td>${row.correctedPPM}</td><td>${row.R0}</td>
+        <td>${row.temperature}</td><td>${row.humidity}</td><td>${row.pressure}</td>
+      </tr>`;
+    });
+
+    // FORECAST TABLE
+    const fcBody = document.querySelector("#forecastTable tbody");
+    fcBody.innerHTML = "";
+
+    const gas = forecast.forecasts?.gas || [];
+    const ppm = forecast.forecasts?.correctedPPM || [];
+    const keys = new Set([...gas.map(g => g.window), ...ppm.map(p => p.window)]);
+
+    [...keys].sort().forEach(k => {
+      const gData = gas.find(d => d.window === k) || {};
+      const pData = ppm.find(d => d.window === k) || {};
+
+      fcBody.innerHTML += `
+        <tr>
+          <td>${k}</td>
+          <td>${gData.predicted?.toFixed(2) || "-"}</td>
+          <td>${gData.slope?.toFixed(4) || "-"}</td>
+          <td>${gData.intercept?.toFixed(2) || "-"}</td>
+          <td>${gData.mse?.toFixed(4) || "-"}</td>
+          <td>${gData.r2?.toFixed(4) || "-"}</td>
+          <td>${gData.samples ?? "-"}</td>
+          <td>${pData.predicted?.toFixed(2) || "-"}</td>
+          <td>${pData.slope?.toFixed(4) || "-"}</td>
+          <td>${pData.intercept?.toFixed(2) || "-"}</td>
+          <td>${pData.mse?.toFixed(4) || "-"}</td>
+          <td>${pData.r2?.toFixed(4) || "-"}</td>
+          <td>${pData.samples ?? "-"}</td>
+        </tr>`;
+    });
+  } catch (err) {
+    console.error("Rawlog/forecast fetch error:", err);
+  }
+}
+
+
+loadRealtime();
+loadRawlogAndForecast();
+setInterval(loadRealtime, 1000);
+setInterval(loadRawlogAndForecast, 60000);
+</script>
+
+</body>
+</html>
